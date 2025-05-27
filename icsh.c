@@ -9,12 +9,35 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <termios.h>
+#include <signal.h>
 
 #define MAX_CMD_BUFFER 255
- 
+
+//function to disable displaying ^C and ^Z on shell
+void disableEchoctl() {
+    struct termios term;
+    tcgetattr(STDIN_FILENO, &term);        
+    term.c_lflag &= ~ECHOCTL;              
+    tcsetattr(STDIN_FILENO, TCSANOW, &term); 
+}
+//global variables 
+volatile int fg_child_pid = -1;
+volatile int last_exit_code = 0;
+
+//to handle SIGSTP and SIGINT
+void signalHandler(int sig){
+    if (fg_child_pid > 0){
+       kill(fg_child_pid,sig);
+    }
+}
+
+//all command processing goes here
 void processCommand(char *cmd){
-    int ec= -1;
-    while(*cmd == ' ')cmd++;
+    if(strcmp(cmd,"echo $?") == 0){
+        printf("%d\n",last_exit_code);
+        return;
+    }
     if (strncmp(cmd,"echo ",5)== 0){
         char *temp = cmd +5;
         while(*temp == ' '){
@@ -27,6 +50,7 @@ void processCommand(char *cmd){
         while(*temp == ' ')temp++;
         if(*temp == '\0'){
             printf("No exit code found!\n");
+            return;
         }
         int check = 1;
         for (char *p = temp; *p !='\0' ; p++){
@@ -36,13 +60,14 @@ void processCommand(char *cmd){
             }
         }
         if(check){
-            ec = atoi(temp);
+            int ec = atoi(temp);
             ec &= 0xFF;
             printf("echo $?\n%d\n",ec);
             exit(ec);
         }
         else{
             printf("Invalid Exit Code!\n");
+            last_exit_code = -1;
         }
     }
     else{
@@ -64,20 +89,25 @@ void processCommand(char *cmd){
             exit(127);
         }
         else if (pid > 0){
+            fg_child_pid = pid;
             int temp;
-            waitpid(pid,&temp,0);
+            waitpid(pid,&temp,WUNTRACED);
+            fg_child_pid = -1;
             if (WIFEXITED(temp)){
-                ec = WEXITSTATUS(temp);
-                if(ec == 127){
-                    ec = -1;
+                last_exit_code = WEXITSTATUS(temp);
+                if(last_exit_code == 127){
+                    last_exit_code = -1;
                 }
             }
         }
         else{
             perror("fork");
+            last_exit_code = -1;
         }
     }
 }
+
+//m2, script mode
 void runScriptMode(char *path){
     char line[MAX_CMD_BUFFER];
     char last[MAX_CMD_BUFFER]="";
@@ -95,20 +125,28 @@ void runScriptMode(char *path){
                 continue;
             }
             else{
-                //printf("Shebang:%s\n",last);
+                printf("Last command: %s\n",last);
                 processCommand(last);
             }
         }
         else{
-            printf("Script Mode :%s\n",temp);
-            processCommand(temp);
-            strcpy(last,line);
+            char clean[MAX_CMD_BUFFER];
+            strncpy(clean, line, MAX_CMD_BUFFER);
+            clean[MAX_CMD_BUFFER - 1] = '\0';
+            processCommand(clean);
+            strncpy(last, clean, MAX_CMD_BUFFER);
+            last[MAX_CMD_BUFFER - 1] = '\0';
         }
     }
     fclose(file);
     exit(0);
 }
+
+//main logic loop
 int main(int argc,char *argv[]) {
+    disableEchoctl();
+    signal(SIGTSTP,signalHandler);
+    signal(SIGINT,signalHandler);
     if (argc == 2){
         runScriptMode(argv[1]);
         return 0;
