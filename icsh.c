@@ -5,6 +5,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <sys/wait.h>
 #include <sys/types.h>
@@ -38,7 +40,7 @@ void processCommand(char *cmd){
         printf("%d\n",last_exit_code);
         return;
     }
-    if (strncmp(cmd,"echo ",5)== 0){
+    else if (strncmp(cmd,"echo ",5)== 0 && strchr(cmd,'<') == NULL && strchr(cmd,'>') == NULL){
         char *temp = cmd +5;
         while(*temp == ' '){
             temp++;
@@ -50,7 +52,8 @@ void processCommand(char *cmd){
         while(*temp == ' ')temp++;
         if(*temp == '\0'){
             printf("No exit code found!\n");
-            return;
+            printf("Bye!");
+            exit(0);
         }
         int check = 1;
         for (char *p = temp; *p !='\0' ; p++){
@@ -63,6 +66,7 @@ void processCommand(char *cmd){
             int ec = atoi(temp);
             ec &= 0xFF;
             printf("echo $?\n%d\n",ec);
+            printf("Bye!");
             exit(ec);
         }
         else{
@@ -78,12 +82,43 @@ void processCommand(char *cmd){
             char *args[10];
             int i = 0;
             char *token = strtok(cpy," ");
+            char *input_file = NULL,*output_file = NULL;
             while(token != NULL && i<9){
-                args[i] = token;
-                i++;
+                if(strcmp(token,"<")==0){
+                    token = strtok(NULL," ");//get the next character after the <
+                    if(token){
+                        input_file = token;
+                    }
+                }
+                else if(strcmp(token,">")==0){
+                    token = strtok(NULL," ");
+                    if(token){
+                        output_file = token;
+                    }
+                }
+                else{
+                args[i++] = token;}
                 token = strtok(NULL," ");
             }
             args[i] = NULL;
+            if(input_file){
+                int in = open(input_file,O_RDONLY);
+                if(in < 0){
+                    printf("Input file error!");
+                    exit(1);
+                }
+                dup2(in,STDIN_FILENO);
+                close(in);
+            }
+            if(output_file){
+                int out = open(output_file,O_WRONLY | O_CREAT | O_TRUNC,0644);
+                if(out < 0){
+                    printf("Output file error!");
+                    exit(1);
+                }
+                dup2(out,STDOUT_FILENO);
+                close(out);
+            }
             execvp(args[0],args);
             printf("Unknown Command!\n");
             exit(127);
@@ -98,6 +133,7 @@ void processCommand(char *cmd){
                 if(last_exit_code == 127){
                     last_exit_code = -1;
                 }
+                printf("\n");
             }
         }
         else{
