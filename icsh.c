@@ -16,27 +16,155 @@
 
 #define MAX_CMD_BUFFER 255
 
-//function to disable displaying ^C and ^Z on shell
-void disableEchoctl() {
-    struct termios term;
-    tcgetattr(STDIN_FILENO, &term);        
-    term.c_lflag &= ~ECHOCTL;              
-    tcsetattr(STDIN_FILENO, TCSANOW, &term); 
-}
+typedef struct Job{
+    int id;
+    pid_t pid;
+    char command[MAX_CMD_BUFFER];
+    char status[8];
+    struct Job* next_job;
+}Job ;
+Job *job_list = NULL;
+int next_job_id= 1;
+
 //global variables 
 volatile int fg_child_pid = -1;
 volatile int last_exit_code = 0;
 
+void updateJob(pid_t pid){
+    Job *temp = job_list;
+    while(temp!= NULL){
+        if(temp->pid == pid){
+            strcpy(temp->status,"Stopped");
+        }
+        temp=temp->next_job;
+    }
+}
 //to handle SIGSTP and SIGINT
 void signalHandler(int sig){
     if (fg_child_pid > 0){
+       updateJob(fg_child_pid);
        kill(fg_child_pid,sig);
+    }
+}
+
+pid_t getJob_pid(int id){
+    Job *temp = job_list;
+    while(temp!= NULL){
+        if(temp->id == id){
+            return temp->pid;
+        }
+        temp = temp->next_job;
+    }
+    return -1;
+}
+
+void checkBackground(){
+    int status,temp_pid;
+    while((temp_pid = waitpid(-1,&status,WNOHANG)) > 0){
+        Job *curr = job_list;
+        Job *prev = NULL;
+        while(curr != NULL){
+            if(curr->pid == temp_pid){
+                printf("\n[%d]   Done          %s\n",curr->id,curr-> command);
+                if(prev == NULL){
+                    job_list= curr->next_job;
+                    free(curr);
+                }
+                else{
+                    prev->next_job = curr->next_job;
+                    free(curr);
+                }
+                break;
+            }
+            prev = curr;
+            curr = curr->next_job;
+        }
+        fflush(stdout);
+    }
+}
+
+void addJob(int pid,char *command){
+    Job *new_job = malloc(sizeof(Job));
+    new_job->pid = pid;
+    new_job->id = next_job_id++;
+    new_job->next_job = NULL;
+    strcpy(new_job->status,"Running");
+    strcpy(new_job->command,command);
+    if(job_list == NULL){
+        job_list = new_job;
+    }
+    else{
+        Job *temp = job_list;
+        while(temp->next_job != NULL){
+            temp = temp->next_job;
+        }
+        temp->next_job = new_job;
+    }
+    printf("[%d] PID: %d  \n",new_job->id,new_job->pid);
+}
+
+void printJob(){
+    Job* temp = job_list;
+    while(temp != NULL){
+        printf("[%d] %s %s\n",temp->id,temp->status,temp->command);
+        temp = temp->next_job;
     }
 }
 
 //all command processing goes here
 void processCommand(char *cmd){
-    if(strcmp(cmd,"echo $?") == 0){
+    if(strncmp(cmd,"bg %",4)==0){
+        char *temp = cmd+4;
+        for (char *p =temp; *p != '\0'; p++){
+            if (*p < '0' || *p > '9'){
+                printf("Invalid Job ID!\n");
+                last_exit_code = -1;
+                return;
+            }
+        }
+        int job_id = atoi(temp);
+        Job *curr = job_list;
+        while(curr != NULL){
+            if (curr-> id == job_id){
+                kill(curr->pid,SIGCONT);
+                strcpy(curr->status,"Running");
+                printf("[%d]   %s\n",curr->id,curr->command);
+                return;
+            }
+            curr = curr->next_job;
+        }
+        printf("ID not found!\n");
+        last_exit_code = -1;
+        return;
+    }
+    else if(strncmp(cmd,"fg %",4)==0){
+        char *temp = cmd+4;
+        for (char *p =temp; *p != '\0'; p++){
+            if (*p < '0' || *p > '9'){
+                printf("Invalid Job ID!\n");
+                last_exit_code = -1;
+                return;
+            }
+        }
+        int job_id = atoi(temp);
+        pid_t process_id = getJob_pid(job_id);
+        if(process_id){
+            fg_child_pid = process_id;
+            kill(fg_child_pid,SIGCONT);
+            int status;
+            waitpid(fg_child_pid,&status,WUNTRACED);
+            fg_child_pid = -1;
+        }
+        else{
+            printf("No such ID exists\n");
+        }
+        return;
+    }
+    else if(strcmp(cmd,"jobs")==0){
+        printJob();
+        return;
+    }
+    else if(strcmp(cmd,"echo $?") == 0){
         printf("%d\n",last_exit_code);
         return;
     }
@@ -55,52 +183,53 @@ void processCommand(char *cmd){
             printf("Bye!");
             exit(0);
         }
-        int check = 1;
         for (char *p = temp; *p !='\0' ; p++){
             if (*p < '0' || *p > '9'){
-                check = 0;
-                break;
+                printf("Invalid Exit Code!\n");
+                last_exit_code = -1;
+                return;
             }
         }
-        if(check){
-            int ec = atoi(temp);
-            ec &= 0xFF;
-            printf("echo $?\n%d\n",ec);
-            printf("Bye!");
-            exit(ec);
-        }
-        else{
-            printf("Invalid Exit Code!\n");
-            last_exit_code = -1;
-        }
+        int ec = atoi(temp);
+        ec &= 0xFF;
+        printf("echo $?\n%d\n",ec);
+        printf("Bye!");
+        exit(ec);
     }
     else{
+        int background = 0;
+        char cpy[MAX_CMD_BUFFER];
+        strncpy(cpy,cmd,MAX_CMD_BUFFER);
+        char *args[10];
+        int i = 0;
+        char *token = strtok(cpy," ");
+        char *input_file = NULL,*output_file = NULL;
+        while(token != NULL && i<9){
+            if(strcmp(token,"<")==0){
+                token = strtok(NULL," ");//get the next character after the <
+                if(token){
+                    input_file = token;
+                }
+            }
+            else if(strcmp(token,">")==0){
+                token = strtok(NULL," ");
+                if(token){
+                    output_file = token;
+                }
+            }
+            else{
+                args[i++] = token;
+            }
+            token = strtok(NULL," ");
+        }
+        args[i] = NULL;
+        if(i > 0 && strcmp(args[i-1],"&") == 0){
+            background = 1;
+            args[i-1] = NULL;
+        }
         pid_t pid = fork();
         if(pid == 0){
-            char cpy[MAX_CMD_BUFFER];
-            strncpy(cpy,cmd,MAX_CMD_BUFFER);
-            char *args[10];
-            int i = 0;
-            char *token = strtok(cpy," ");
-            char *input_file = NULL,*output_file = NULL;
-            while(token != NULL && i<9){
-                if(strcmp(token,"<")==0){
-                    token = strtok(NULL," ");//get the next character after the <
-                    if(token){
-                        input_file = token;
-                    }
-                }
-                else if(strcmp(token,">")==0){
-                    token = strtok(NULL," ");
-                    if(token){
-                        output_file = token;
-                    }
-                }
-                else{
-                args[i++] = token;}
-                token = strtok(NULL," ");
-            }
-            args[i] = NULL;
+            setpgid(0,0);
             if(input_file){
                 int in = open(input_file,O_RDONLY);
                 if(in < 0){
@@ -124,6 +253,10 @@ void processCommand(char *cmd){
             exit(127);
         }
         else if (pid > 0){
+            if(background){
+                addJob(pid,cmd);
+            }
+            else{
             fg_child_pid = pid;
             int temp;
             waitpid(pid,&temp,WUNTRACED);
@@ -134,6 +267,30 @@ void processCommand(char *cmd){
                     last_exit_code = -1;
                 }
                 printf("\n");
+            }
+            if(WIFSTOPPED(temp)){
+                Job *curr = job_list;
+                int found = 0 ;
+                while(curr != NULL){
+                    if(curr->pid == pid){
+                        strcpy(curr->status,"Stopped");
+                        found = 1;
+                        break;
+                    }
+                    curr = curr->next_job;
+                }
+                if(!found){
+                    addJob(pid,cmd);
+                    Job *temp = job_list;
+                    while(temp!= NULL){
+                        if(temp->pid == pid){
+                            strcpy(temp->status,"Stopped");
+                            break;
+                        }
+                        temp = temp->next_job;
+                    }
+                }
+            }
             }
         }
         else{
@@ -180,9 +337,9 @@ void runScriptMode(char *path){
 
 //main logic loop
 int main(int argc,char *argv[]) {
-    disableEchoctl();
     signal(SIGTSTP,signalHandler);
     signal(SIGINT,signalHandler);
+    signal(SIGCHLD,checkBackground);
     if (argc == 2){
         runScriptMode(argv[1]);
         return 0;
