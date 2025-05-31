@@ -15,7 +15,7 @@
 #include <signal.h>
 
 #define MAX_CMD_BUFFER 255
-
+//to keep track of the job lists
 typedef struct Job{
     int id;
     pid_t pid;
@@ -29,7 +29,7 @@ int next_job_id= 1;
 //global variables 
 volatile int fg_child_pid = -1;
 volatile int last_exit_code = 0;
-
+//TO update the jobs when sigint comes in
 void updateJob(pid_t pid){
     Job *temp = job_list;
     while(temp!= NULL){
@@ -39,6 +39,7 @@ void updateJob(pid_t pid){
         temp=temp->next_job;
     }
 }
+
 //to handle SIGSTP and SIGINT
 void signalHandler(int sig){
     if (fg_child_pid > 0){
@@ -47,6 +48,7 @@ void signalHandler(int sig){
     }
 }
 
+//find the pid of the given job id
 pid_t getJob_pid(int id){
     Job *temp = job_list;
     while(temp!= NULL){
@@ -58,6 +60,7 @@ pid_t getJob_pid(int id){
     return -1;
 }
 
+//to print out immediately if the job is finished
 void checkBackground(){
     int status,temp_pid;
     while((temp_pid = waitpid(-1,&status,WNOHANG)) > 0){
@@ -82,7 +85,7 @@ void checkBackground(){
         fflush(stdout);
     }
 }
-
+//add job to the list to keep track
 void addJob(int pid,char *command){
     Job *new_job = malloc(sizeof(Job));
     new_job->pid = pid;
@@ -102,7 +105,7 @@ void addJob(int pid,char *command){
     }
     printf("[%d] PID: %d  \n",new_job->id,new_job->pid);
 }
-
+//function for printing jobs
 void printJob(){
     Job* temp = job_list;
     while(temp != NULL){
@@ -337,15 +340,26 @@ void runScriptMode(char *path){
 
 //main logic loop
 int main(int argc,char *argv[]) {
-    signal(SIGTSTP,signalHandler);
-    signal(SIGINT,signalHandler);
-    signal(SIGCHLD,checkBackground);
-    if (argc == 2){
-        runScriptMode(argv[1]);
+    signal(SIGTSTP,signalHandler);//ctrl c
+    signal(SIGINT,signalHandler);// ctrl v
+    signal(SIGCHLD,checkBackground);//to check if the process finishes in background
+    if (argc >= 2){
+        for(int i=2;i<argc;i++){
+        runScriptMode(argv[i]);
+        }
         return 0;
     }
     char buffer[MAX_CMD_BUFFER];
     char last_command[MAX_CMD_BUFFER]="";
+    printf("  ／＞　 フ\n");
+    printf("  | 　_　_| \n");
+    printf("／` ミ＿xノ \n");
+    printf("/　　　　 |\n");
+    printf("/　 ヽ　　 ﾉ\n");
+    printf("│　　|　|　|\n");
+    printf("／￣|　　 |　|　|\n");
+    printf("(￣ヽ＿_ヽ_)__)\n");
+    printf("＼二)\n");
     printf("Starting IC shell\nicsh $ <waiting for command>\n");
     while (1) {
         printf("icsh $ ");
